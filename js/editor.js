@@ -1,6 +1,6 @@
 // 사분면 편집 화면
 import { h, icon, clamp, debounce, lsGet, lsSet, lsDel, toast, confirmDialog, colorFor, initialOf, charMeta } from './util.js';
-import { BOARD, VIEWS, VIEW_LABEL, DIR_LABEL, emptyDoc, normalizeDoc, compactDoc } from './layout.js';
+import { VIEWS, VIEW_LABEL, DIR_LABEL, CAPTION_VIEWS, SIZE_MIN, SIZE_MAX, TEXT_RANGE, TEXT_DEFAULT, dims, gridSteps, emptyDoc, normalizeDoc, compactDoc } from './layout.js';
 import { BoardView } from './board.js';
 import { openExportModal } from './export_modal.js';
 
@@ -79,10 +79,29 @@ export async function mountEditor(ctx, { id, fromId }) {
   const gridChk = h('input', { type: 'checkbox', onchange: (e) => { st.doc.grid.show = e.target.checked; changed(); } });
   const snapChk = h('input', { type: 'checkbox', onchange: (e) => { st.doc.grid.snap = e.target.checked; changed({ board: false }); } });
   const divSel = h('select', { class: 'select select-sm', 'aria-label': '그리드 칸 수', onchange: (e) => { history.checkpoint(); st.doc.grid.div = Number(e.target.value); changed(); } },
-    ...[8, 10, 12, 20].map((n) => h('option', { value: String(n) }, `${n}칸`)));
-  const sizeRange = h('input', { type: 'range', min: '56', max: '140', step: '4', 'aria-label': '아이콘 크기',
-    oninput: (e) => { history.checkpoint('size'); st.doc.iconSize = Number(e.target.value); sizeOut.textContent = e.target.value; changed(); } });
-  const sizeOut = h('span', { class: 'muted small num' });
+    ...[8, 10, 12, 20].map((n) => h('option', { value: String(n) }, `짧은 쪽 ${n}칸`)));
+
+  // 슬라이더 하나 (라벨 + 막대 + 숫자). get/set으로 문서 값과 연결
+  const ranges = [];
+  const rangeField = (label, min, max, step, get, set, unit = '') => {
+    const out = h('span', { class: 'muted small num' });
+    const input = h('input', { type: 'range', min: String(min), max: String(max), step: String(step), 'aria-label': label,
+      oninput: (e) => { history.checkpoint('range-' + label); set(Number(e.target.value)); out.textContent = e.target.value + unit; changed(); } });
+    ranges.push(() => { input.value = String(get()); out.textContent = get() + unit; });
+    return h('label', { class: 'range-field' }, h('span', { class: 'range-label' }, label), input, out);
+  };
+  const boardW = rangeField('가로', SIZE_MIN, SIZE_MAX, 50, () => st.doc.board.w, (v) => { st.doc.board.w = v; });
+  const boardH = rangeField('세로', SIZE_MIN, SIZE_MAX, 50, () => st.doc.board.h, (v) => { st.doc.board.h = v; });
+  const sizeField = rangeField('아이콘 크기', 56, 140, 4, () => st.doc.iconSize, (v) => { st.doc.iconSize = v; });
+  const nameSize = rangeField('이름 글자', ...TEXT_RANGE.name, 1, () => st.doc.text.name, (v) => { st.doc.text.name = v; });
+  const descSize = rangeField('설명 글자', ...TEXT_RANGE.desc, 1, () => st.doc.text.desc, (v) => { st.doc.text.desc = v; });
+  const preset = (label, w, hh) => h('button', { type: 'button', class: 'chip', onclick: () => {
+    history.checkpoint(); st.doc.board.w = w; st.doc.board.h = hh; syncControls(); changed();
+  } }, label);
+  const resetText = h('button', { type: 'button', class: 'chip', onclick: () => {
+    history.checkpoint(); st.doc.text = { ...TEXT_DEFAULT }; st.doc.iconSize = 88; syncControls(); changed();
+  } }, '기본 크기로');
+
   const zoomSeg = h('div', { class: 'seg seg-sm', role: 'group', 'aria-label': '확대' },
     ...[[1, '맞춤'], [1.5, '150%'], [2, '200%']].map(([z, t]) => h('button', { type: 'button', dataset: { v: String(z) }, onclick: () => { st.zoom = z; board.setZoom(z); paintSeg(zoomSeg, String(z)); } }, t)));
   const warnChip = h('button', { class: 'warn-chip', type: 'button', hidden: true, onclick: () => {
@@ -98,6 +117,17 @@ export async function mountEditor(ctx, { id, fromId }) {
     return h('label', { class: 'field axis-field' }, h('span', { class: 'field-label' }, label), inp);
   }));
 
+  const group = (title, ...children) => h('section', { class: 'settings-group' }, h('h3', null, title), ...children);
+  const settingsPanel = h('div', { class: 'settings-panel', id: 'ed-settings' },
+    group('축 이름', axesRow),
+    group('사분면 크기', boardW, boardH,
+      h('div', { class: 'chips' }, preset('정사각형', 1000, 1000), preset('가로로 넓게', 1600, 1000), preset('세로로 길게', 1000, 1400))),
+    group('아이콘·글자 크기', sizeField, nameSize, descSize, h('div', { class: 'chips' }, resetText)),
+    group('그리드',
+      h('label', { class: 'check' }, gridChk, '그리드 보이기'),
+      h('label', { class: 'check' }, snapChk, '그리드에 맞추기'),
+      divSel));
+
   const banner = h('div', { class: 'banner', hidden: true });
   const boardHost = h('div', { class: 'ed-board' });
   const selPanel = h('section', { class: 'side-section sel-panel', 'aria-label': '선택한 캐릭터' });
@@ -108,9 +138,9 @@ export async function mountEditor(ctx, { id, fromId }) {
   const side = h('aside', { class: 'ed-side', dataset: { dropzone: 'roster' } },
     h('div', { class: 'side-tabs' }, tabRoster, tabSel, sheetToggle), selPanel, rosterPanel);
 
-  const settingsBtn = h('button', { class: 'btn btn-sm settings-toggle', type: 'button', 'aria-expanded': 'false',
+  const settingsBtn = h('button', { class: 'btn btn-sm settings-toggle', type: 'button', 'aria-expanded': 'false', 'aria-controls': 'ed-settings',
     onclick: () => { const open = !el.classList.contains('settings-open'); el.classList.toggle('settings-open', open); settingsBtn.setAttribute('aria-expanded', String(open)); board.fit(); } },
-  '축·그리드 설정', icon('chevron', 14));
+  '설정', icon('chevron', 14));
   const el = h('div', { class: 'editor' },
     h('div', { class: 'ed-top' },
       h('button', { class: 'btn-icon', type: 'button', 'aria-label': '목록으로', onclick: () => navigate('#/') }, icon('back')),
@@ -118,19 +148,14 @@ export async function mountEditor(ctx, { id, fromId }) {
       h('div', { class: 'ed-top-actions' }, undoBtn, redoBtn,
         h('button', { class: 'btn', type: 'button', 'aria-label': '이미지로 내보내기', onclick: () => openExport() }, icon('download'), h('span', { class: 'hide-sm' }, '이미지로 내보내기')),
         visSelect, saveBtn)),
-    h('div', { class: 'ed-opts' },
-      viewSeg, settingsBtn, warnChip,
-      h('div', { class: 'opts-more' },
-        h('label', { class: 'check' }, gridChk, '그리드 보이기'),
-        h('label', { class: 'check' }, snapChk, '그리드에 맞추기'),
-        divSel,
-        h('label', { class: 'range-field' }, '아이콘 크기', sizeRange, sizeOut),
-        zoomSeg)),
+    h('div', { class: 'ed-opts' }, viewSeg, zoomSeg, settingsBtn, warnChip),
+    settingsPanel,
     h('div', { class: 'ed-body' },
-      h('main', { class: 'ed-main' }, axesRow, banner, boardHost,
+      h('main', { class: 'ed-main' }, banner, boardHost,
         h('p', { class: 'muted small ed-help' }, '일람에서 캐릭터를 끌어다 놓거나, 누른 뒤 놓을 곳을 누르세요. 선택한 캐릭터는 방향키로 옮기고(Shift는 크게) Delete로 뺄 수 있어요. 사분면 밖 일람 쪽으로 끌어 놓아도 빠져요.')),
       side));
   root.replaceChildren(el);
+  // 축 이름이 비어 있는 새 사분면은 설정을 펼친 채로 시작
   if (!Object.values(st.doc.axes).some((v) => v && v.trim())) {
     el.classList.add('settings-open');
     settingsBtn.setAttribute('aria-expanded', 'true');
@@ -187,7 +212,7 @@ export async function mountEditor(ctx, { id, fromId }) {
   function removeItem(cid, checkpoint = true) {
     if (checkpoint) history.checkpoint();
     st.doc.items = st.doc.items.filter((i) => i.c !== cid);
-    for (const v of ['name', 'desc']) delete st.doc.captions[v][cid];
+    for (const v of CAPTION_VIEWS) delete st.doc.captions[v][cid];
     if (st.selected === cid) st.selected = null;
     changed();
   }
@@ -217,8 +242,7 @@ export async function mountEditor(ctx, { id, fromId }) {
     gridChk.checked = st.doc.grid.show;
     snapChk.checked = st.doc.grid.snap;
     divSel.value = String(st.doc.grid.div);
-    sizeRange.value = String(st.doc.iconSize);
-    sizeOut.textContent = String(st.doc.iconSize);
+    for (const r of ranges) r();
     visSelect.value = st.visibility;
   }
   function renderTop() {
@@ -242,6 +266,7 @@ export async function mountEditor(ctx, { id, fromId }) {
     renderSel();
     renderRoster();
     paintSide();
+    board.fit();   // 위쪽 줄(경고 칩·안내 띠 등) 높이가 바뀌어도 사분면 크기를 다시 맞춤
   }
   function paintSide() {
     const placed = st.doc.items.filter((i) => chars.has(i.c)).length;
@@ -278,7 +303,7 @@ export async function mountEditor(ctx, { id, fromId }) {
         h('button', { class: 'btn btn-sm', type: 'button', onclick: () => removeItem(cid) }, '사분면에서 빼기')),
     ];
     if (st.view === 'image') {
-      parts.push(h('p', { class: 'muted small' }, "'이미지만' 보기에는 캡션이 없어요. 위에서 보기를 '이름'이나 '이름+설명'으로 바꾸면 캡션을 고칠 수 있어요."));
+      parts.push(h('p', { class: 'muted small' }, "'이미지만' 보기에는 캡션이 없어요. 위에서 다른 보기로 바꾸면 캡션을 고칠 수 있어요."));
     } else {
       const curDir = ov.dir || 'auto';
       const curAlign = ov.align || 'auto';
@@ -295,6 +320,7 @@ export async function mountEditor(ctx, { id, fromId }) {
             h('div', { class: 'align-grid', role: 'group', 'aria-label': '텍스트 정렬' }, ...ALIGN_OPTS.map(([a, t]) =>
               h('button', { type: 'button', class: a === curAlign ? 'on' : '', 'aria-pressed': a === curAlign ? 'true' : 'false', onclick: () => setOverride({ align: a }) }, t))))),
         h('p', { class: 'muted small' }, `이 위치·정렬은 '${VIEW_LABEL[st.view]}' 보기에만 적용돼요. 다른 보기의 설정은 따로 기억해요.`),
+        st.view === 'desc_only' && !(it.desc || '').trim() ? h('p', { class: 'warn small' }, icon('warn', 14), " 설명이 없어서 '설명만' 보기에서는 이 캐릭터 옆에 아무 글도 안 보여요.") : null,
         lay?.bad ? h('p', { class: 'warn small' }, icon('warn', 14), ' 다른 캡션이나 이미지와 겹쳐 있어요. 위치를 바꾸거나 아이콘 크기를 줄여 보세요.') : null);
     }
     const counter = h('span', { class: 'muted small' }, `${(it.desc || '').length} / 60`);
@@ -307,7 +333,7 @@ export async function mountEditor(ctx, { id, fromId }) {
       } });
     descArea.value = it.desc || '';
     parts.push(h('label', { class: 'field' },
-      h('span', { class: 'field-label row-between' }, h('span', null, "설명 ('이름+설명' 보기에 표시)"), counter), descArea));
+      h('span', { class: 'field-label row-between' }, h('span', null, "설명 ('이름+설명', '설명만' 보기에 표시)"), counter), descArea));
     selPanel.replaceChildren(...parts.filter(Boolean));
   }
   function autoDirText(cid) {
@@ -511,9 +537,12 @@ export async function mountEditor(ctx, { id, fromId }) {
       e.preventDefault();
       const [dx, dy] = arrows[e.key];
       const snap = st.doc.grid.snap;
-      const step = snap ? BOARD / st.doc.grid.div : (e.shiftKey ? 25 : 5);
+      const { w: W, h: H } = dims(st.doc);
+      const g = gridSteps(st.doc);
+      const stepX = snap ? g.sx : (e.shiftKey ? 25 : 5);
+      const stepY = snap ? g.sy : (e.shiftKey ? 25 : 5);
       history.checkpoint('nudge-' + it.c);
-      const p = board.constrain(it.x * BOARD + dx * step, it.y * BOARD + dy * step, snap);
+      const p = board.constrain(it.x * W + dx * stepX, it.y * H + dy * stepY, snap);
       it.x = p.x; it.y = p.y;
       changed();
     }

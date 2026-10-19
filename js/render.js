@@ -1,5 +1,5 @@
 // 캔버스 그리기: 이미지 내보내기 + 목록 썸네일
-import { BOARD, STAGE_MARGIN, T, FONT, SERIF, axisFont, axisLabelBoxes, layoutCaptions } from './layout.js';
+import { STAGE_MARGIN, FONT, SERIF, axisFont, axisLabelBoxes, layoutCaptions, dims, styleOf, gridSteps } from './layout.js';
 import { colorFor, initialOf } from './util.js';
 
 export const THEMES = {
@@ -66,38 +66,37 @@ export function drawBoard(ctx, { doc, chars, view, theme, showGrid, ox = 0, oy =
   ctx.save();
   ctx.translate(ox, oy);
 
+  const { w: W, h: H } = dims(doc);
+  const st = styleOf(doc);
   ctx.fillStyle = th.board;
-  ctx.fillRect(0, 0, BOARD, BOARD);
+  ctx.fillRect(0, 0, W, H);
 
   if (showGrid) {
-    const div = doc.grid?.div || 10;
+    const g = gridSteps(doc);
     ctx.strokeStyle = th.grid;
     ctx.lineWidth = 1;
     ctx.beginPath();
-    for (let i = 1; i < div; i++) {
-      const p = Math.round((BOARD / div) * i) + 0.5;
-      ctx.moveTo(p, 0); ctx.lineTo(p, BOARD);
-      ctx.moveTo(0, p); ctx.lineTo(BOARD, p);
-    }
+    for (let i = 1; i < g.divX; i++) { const p = Math.round(g.sx * i) + 0.5; ctx.moveTo(p, 0); ctx.lineTo(p, H); }
+    for (let i = 1; i < g.divY; i++) { const p = Math.round(g.sy * i) + 0.5; ctx.moveTo(0, p); ctx.lineTo(W, p); }
     ctx.stroke();
   }
 
   ctx.strokeStyle = th.axis;
   ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.moveTo(BOARD / 2, 0); ctx.lineTo(BOARD / 2, BOARD);
-  ctx.moveTo(0, BOARD / 2); ctx.lineTo(BOARD, BOARD / 2);
+  ctx.moveTo(W / 2, 0); ctx.lineTo(W / 2, H);
+  ctx.moveTo(0, H / 2); ctx.lineTo(W, H / 2);
   ctx.stroke();
 
   ctx.strokeStyle = th.boardEdge;
   ctx.lineWidth = theme === 'mono' ? 2 : 1;
-  ctx.strokeRect(0.5, 0.5, BOARD - 1, BOARD - 1);
+  ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
 
   // 축 이름
-  ctx.font = axisFont();
+  ctx.font = axisFont(st);
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'center';
-  for (const ab of axisLabelBoxes(doc.axes)) {
+  for (const ab of axisLabelBoxes(doc.axes, st, W, H)) {
     ctx.fillStyle = th.axisPill;
     roundRect(ctx, ab.x, ab.y, ab.w, ab.h, 6);
     ctx.fill();
@@ -110,20 +109,17 @@ export function drawBoard(ctx, { doc, chars, view, theme, showGrid, ox = 0, oy =
   for (const it of doc.items) {
     const ch = chars.get(it.c);
     if (!ch) continue;
-    drawIcon(ctx, ch, it.x * BOARD, it.y * BOARD, s, th);
+    drawIcon(ctx, ch, it.x * W, it.y * H, s, th);
   }
 
   // 캡션
-  const caps = captions || layoutCaptions({
-    items: doc.items, chars, view, iconSize: s,
-    overrides: doc.captions?.[view] || {}, axes: doc.axes,
-  });
+  const caps = captions || layoutCaptions({ doc, chars, view, overrides: doc.captions?.[view] || {} });
   ctx.textBaseline = 'top';
   for (const [, b] of caps) {
     let y = b.y;
     for (const ln of b.lines) {
       ctx.font = ln.font;
-      ctx.fillStyle = ln.role === 'name' ? th.name : th.desc;
+      ctx.fillStyle = ln.role === 'desc' ? th.desc : th.name;
       let x = b.x, align = 'left';
       if (b.align === 'center') { x = b.x + b.w / 2; align = 'center'; }
       else if (b.align === 'right') { x = b.x + b.w; align = 'right'; }
@@ -139,14 +135,15 @@ export function drawBoard(ctx, { doc, chars, view, theme, showGrid, ox = 0, oy =
 export function renderExport({ doc, chars, view, theme, showGrid, showAuthor, title, author, siteLabel, pixelRatio = 1.5 }) {
   const th = THEMES[theme] || THEMES.dark;
   const M = STAGE_MARGIN;
-  const W = BOARD + M * 2;
+  const { w: BW, h: BH } = dims(doc);
+  const W = BW + M * 2;
   const hasTitle = !!(title && title.trim());
   const hasAuthor = !!(showAuthor && author);
   let headerH = 0;
   if (hasTitle) headerH += 60;
   if (hasAuthor) headerH += 34;
   const boardTop = headerH ? 44 + headerH + 26 : M;
-  const H = boardTop + BOARD + M + 10;
+  const H = boardTop + BH + M + 10;
 
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(W * pixelRatio);
@@ -183,18 +180,21 @@ export function renderExport({ doc, chars, view, theme, showGrid, showAuthor, ti
   return canvas;
 }
 
-/** 목록 썸네일 (이미지만, 정사각형) */
+/** 목록 썸네일 (이미지만). 긴 쪽이 size에 맞음 */
 export function renderThumb({ doc, chars, size = 280, theme = 'dark' }) {
+  const { w: W, h: H } = dims(doc);
   const canvas = document.createElement('canvas');
   const ratio = Math.min(2, window.devicePixelRatio || 1);
-  canvas.width = Math.round(size * ratio);
-  canvas.height = Math.round(size * ratio);
+  const k = (size * ratio) / Math.max(W, H);
+  canvas.width = Math.round(W * k);
+  canvas.height = Math.round(H * k);
   const ctx = canvas.getContext('2d');
-  const k = (size * ratio) / BOARD;
   ctx.scale(k, k);
   drawBoard(ctx, { doc, chars, view: 'image', theme, showGrid: false });
-  canvas.style.width = '100%';
-  canvas.style.height = 'auto';
+  canvas.style.width = W >= H ? '100%' : 'auto';
+  canvas.style.height = W >= H ? 'auto' : '100%';
+  canvas.style.maxWidth = '100%';
+  canvas.style.maxHeight = '100%';
   return canvas;
 }
 
@@ -204,4 +204,3 @@ export function canvasToBlob(canvas) {
   });
 }
 
-export const T_EXPORT = T;

@@ -1,8 +1,6 @@
-// 화면 위의 사분면 (편집/보기 공용). 내부 좌표는 1000 단위, 화면 크기에 맞게 축소해서 보여줌.
-import { BOARD, STAGE_MARGIN, layoutCaptions, axisLabelBoxes, placeBox } from './layout.js';
+// 화면 위의 사분면 (편집/보기 공용). 내부 좌표는 사분면 크기(기본 1000) 단위, 화면 크기에 맞게 축소해서 보여줌.
+import { STAGE_MARGIN, layoutCaptions, axisLabelBoxes, placeBox, dims, styleOf, gridSteps, axisFont } from './layout.js';
 import { h, clamp, colorFor, initialOf } from './util.js';
-
-const STAGE = BOARD + STAGE_MARGIN * 2;
 
 export class BoardView {
   constructor(host, opts = {}) {
@@ -20,11 +18,13 @@ export class BoardView {
 
     host.classList.add('board-viewport');
     this.sizer = h('div', { class: 'board-sizer' });
-    this.stage = h('div', { class: 'board-stage', style: { width: STAGE + 'px', height: STAGE + 'px' } });
-    this.board = h('div', { class: 'board', style: { left: STAGE_MARGIN + 'px', top: STAGE_MARGIN + 'px', width: BOARD + 'px', height: BOARD + 'px' } });
+    this.stage = h('div', { class: 'board-stage' });
+    this.board = h('div', { class: 'board', style: { left: STAGE_MARGIN + 'px', top: STAGE_MARGIN + 'px' } });
     this.gridEl = h('div', { class: 'board-grid' });
-    this.axisLayer = h('div', { class: 'board-axes' },
-      h('div', { class: 'axis-line axis-v' }), h('div', { class: 'axis-line axis-h' }));
+    this.axisV = h('div', { class: 'axis-line axis-v' });
+    this.axisH = h('div', { class: 'axis-line axis-h' });
+    this.axisLayer = h('div', { class: 'board-axes' }, this.axisV, this.axisH);
+    this.W = 1000; this.H = 1000;
     this.axisLabelLayer = h('div', { class: 'board-axis-labels' });
     this.capLayer = h('div', { class: 'board-caps' });
     this.iconLayer = h('div', { class: 'board-icons' });
@@ -58,27 +58,41 @@ export class BoardView {
 
   setZoom(z) { this.zoom = z; this.fit(); }
 
+  // 사분면 크기에 맞춰 무대 크기를 정함
+  applySize() {
+    const { w, h: hh } = dims(this.state.doc);
+    this.W = w; this.H = hh;
+    this.SW = w + STAGE_MARGIN * 2;
+    this.SH = hh + STAGE_MARGIN * 2;
+    Object.assign(this.stage.style, { width: this.SW + 'px', height: this.SH + 'px' });
+    Object.assign(this.board.style, { width: w + 'px', height: hh + 'px' });
+    Object.assign(this.axisV.style, { left: (w / 2 - 1) + 'px' });
+    Object.assign(this.axisH.style, { top: (hh / 2 - 1) + 'px' });
+  }
+
   fit() {
-    const w = this.host.clientWidth || 300;
-    let size = w;
+    if (!this.SW) this.applySize();
+    const availW = this.host.clientWidth || 300;
+    let k = availW / this.SW;
     const fitH = typeof this.opts.fitHeight === 'function' ? this.opts.fitHeight() : this.opts.fitHeight;
     if (fitH) {
-      const top = this.host.getBoundingClientRect().top + window.scrollY;
-      const avail = window.innerHeight - Math.max(0, top - window.scrollY) - (this.opts.bottomReserve?.() || 16);
-      size = Math.min(w, Math.max(280, avail));
+      // 스크롤 위치와 상관없이, 페이지 맨 위에서부터의 위치로 계산 (스크롤된 채로 맞추면 사분면이 화면 밖으로 커지는 문제 방지)
+      const docTop = this.host.getBoundingClientRect().top + window.scrollY;
+      const availH = Math.max(280, window.innerHeight - docTop - (this.opts.bottomReserve?.() || 16));
+      k = Math.min(k, availH / this.SH);
     }
-    size = Math.min(size, this.opts.maxSize || 1140);
-    const px = size * this.zoom;
-    this.k = px / STAGE;
-    this.stage.style.transform = `scale(${this.k})`;
-    this.sizer.style.width = px + 'px';
-    this.sizer.style.height = px + 'px';
+    k = Math.min(k, this.opts.maxScale || 1);
+    k *= this.zoom;
+    this.k = k;
+    this.stage.style.transform = `scale(${k})`;
+    this.sizer.style.width = (this.SW * k) + 'px';
+    this.sizer.style.height = (this.SH * k) + 'px';
     this.host.classList.toggle('zoomed', this.zoom > 1);
   }
 
   toUnits(clientX, clientY) {
     const r = this.board.getBoundingClientRect();
-    return { x: ((clientX - r.left) / r.width) * BOARD, y: ((clientY - r.top) / r.height) * BOARD };
+    return { x: ((clientX - r.left) / r.width) * this.W, y: ((clientY - r.top) / r.height) * this.H };
   }
   stageContains(clientX, clientY) {
     const r = this.stage.getBoundingClientRect();
@@ -87,31 +101,36 @@ export class BoardView {
       && clientY >= Math.max(r.top, v.top) && clientY <= Math.min(r.bottom, v.bottom);
   }
 
-  // 그리드 맞춤 + 사분면 안으로 제한 (단위: 1000)
+  // 그리드 맞춤 + 사분면 안으로 제한 (단위: 사분면 좌표) → 0~1 비율로 돌려줌
   constrain(cx, cy, snap = this.state.doc?.grid?.snap) {
     const doc = this.state.doc;
     const s = doc.iconSize;
+    const { w: W, h: H } = dims(doc);
     if (snap) {
-      const step = BOARD / (doc.grid.div || 10);
-      cx = Math.round(cx / step) * step;
-      cy = Math.round(cy / step) * step;
+      const g = gridSteps(doc);
+      cx = Math.round(cx / g.sx) * g.sx;
+      cy = Math.round(cy / g.sy) * g.sy;
     }
-    return { x: clamp(cx, s / 2, BOARD - s / 2) / BOARD, y: clamp(cy, s / 2, BOARD - s / 2) / BOARD };
+    return { x: clamp(cx, s / 2, W - s / 2) / W, y: clamp(cy, s / 2, H - s / 2) / H };
   }
 
   render() {
     const { doc, chars, view, selected, showGrid, placing } = this.state;
     if (!doc) return;
     const s = doc.iconSize;
+    const { w: W, h: H } = dims(doc);
+    if (W !== this.W || H !== this.H || !this.SW) { this.applySize(); this.fit(); }
+    const st = styleOf(doc);
 
     // 그리드
     this.gridEl.hidden = !showGrid;
-    const step = BOARD / (doc.grid?.div || 10);
-    this.gridEl.style.backgroundSize = `${step}px ${step}px`;
+    const g = gridSteps(doc);
+    this.gridEl.style.backgroundSize = `${g.sx}px ${g.sy}px`;
 
     // 축 이름
-    this.axisLabelLayer.replaceChildren(...axisLabelBoxes(doc.axes).map((ab) =>
-      h('div', { class: 'axis-label', style: { left: ab.x + 'px', top: ab.y + 'px', width: ab.w + 'px', height: ab.h + 'px', lineHeight: ab.h + 'px' } }, ab.text)));
+    const af = axisFont(st);
+    this.axisLabelLayer.replaceChildren(...axisLabelBoxes(doc.axes, st, W, H).map((ab) =>
+      h('div', { class: 'axis-label', style: { left: ab.x + 'px', top: ab.y + 'px', width: ab.w + 'px', height: ab.h + 'px', lineHeight: ab.h + 'px', font: af } }, ab.text)));
 
     // 아이콘
     const live = doc.items.filter((it) => chars.has(it.c));
@@ -132,7 +151,7 @@ export class BoardView {
         this.iconLayer.append(el);
       }
       Object.assign(el.style, {
-        left: (it.x * BOARD - s / 2) + 'px', top: (it.y * BOARD - s / 2) + 'px',
+        left: (it.x * W - s / 2) + 'px', top: (it.y * H - s / 2) + 'px',
         width: s + 'px', height: s + 'px', borderRadius: Math.round(s * 0.18) + 'px',
       });
       el.classList.toggle('selected', selected === it.c);
@@ -147,11 +166,11 @@ export class BoardView {
       const b = layout.get(this.drag.id);
       const it = live.find((i) => i.c === this.drag.id);
       if (b && it) {
-        const p = placeBox(b.dir, it.x * BOARD, it.y * BOARD, s, b.w, b.h);
+        const p = placeBox(b.dir, it.x * W, it.y * H, s, b.w, b.h, st.gap);
         layout.set(this.drag.id, { ...b, x: p.x, y: p.y });
       }
     } else {
-      layout = layoutCaptions({ items: doc.items, chars, view, iconSize: s, overrides: doc.captions?.[view] || {}, axes: doc.axes, prevDirs: this.prevDirs });
+      layout = layoutCaptions({ doc, chars, view, overrides: doc.captions?.[view] || {}, prevDirs: this.prevDirs });
       this.lastLayout = layout;
     }
     const capSeen = new Set();
@@ -163,7 +182,7 @@ export class BoardView {
         this.capEls.set(id, el);
         this.capLayer.append(el);
       }
-      const key = b.lines.map((l) => l.role + l.text).join('\u0001');
+      const key = b.lines.map((l) => l.role + l.font + l.text).join('\u0001');
       if (el.dataset.key !== key) {
         el.dataset.key = key;
         el.replaceChildren(...b.lines.map((l) => h('div', {
@@ -200,7 +219,7 @@ export class BoardView {
         this.opts.onSelect?.(id, { pointer: true });
         // 방향키·Delete가 바로 먹도록 포커스를 옮김 (다시 그려진 요소 기준)
         (this.iconEls.get(id) || iconEl).focus({ preventScroll: true });
-        this.drag = { id, pid: e.pointerId, sx: e.clientX, sy: e.clientY, cx: it.x * BOARD, cy: it.y * BOARD, moved: false };
+        this.drag = { id, pid: e.pointerId, sx: e.clientX, sy: e.clientY, cx: it.x * this.W, cy: it.y * this.H, moved: false };
         iconEl.setPointerCapture?.(e.pointerId);
         return;
       }

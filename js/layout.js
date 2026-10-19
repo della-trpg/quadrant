@@ -1,26 +1,23 @@
 // 사분면 배치 계산 (화면과 내보내기 이미지가 같은 결과를 쓰도록 한 곳에서 계산)
-// 좌표 단위: 사분면 한 변 = 1000
+// 좌표 단위: 사분면 기본 크기 1000×1000. 가로·세로는 사분면마다 600~2000에서 바꿀 수 있음.
+// 배치 위치(x, y)는 0~1 비율로 저장하므로 크기를 바꿔도 같은 자리에 비례해서 놓여요.
 
-export const BOARD = 1000;
-export const STAGE_MARGIN = 70;          // 사분면 바깥 여백 (캡션이 살짝 나가도 보이게)
+export const BOARD = 1000;                  // 기본 크기
+export const SIZE_MIN = 600;
+export const SIZE_MAX = 2000;
+export const STAGE_MARGIN = 70;             // 사분면 바깥 여백 (캡션이 살짝 나가도 보이게)
 export const FONT = '"IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif';
 export const SERIF = '"Noto Serif KR", "AppleMyungjo", "Batang", serif';
 
-export const T = {
-  nameSize: 24,
-  descSize: 19,
-  lineH: 1.38,
-  nameMaxW: 280,
-  descMaxW: 260,
-  gap: 8,
-  axisSize: 22,
-  axisPadX: 10,
-  axisPadY: 5,
-  axisInset: 14,
-};
+export const TEXT_DEFAULT = { name: 24, desc: 19 };
+export const TEXT_RANGE = { name: [14, 48], desc: [12, 40] };
 
-export const VIEWS = ['image', 'name', 'desc'];
-export const VIEW_LABEL = { image: '이미지만', name: '이름', desc: '이름+설명' };
+// 예전 코드 호환용 (기본 글자 크기 기준)
+export const T = { nameSize: 24, descSize: 19 };
+
+export const VIEWS = ['image', 'name', 'desc', 'desc_only'];
+export const CAPTION_VIEWS = ['name', 'desc', 'desc_only'];
+export const VIEW_LABEL = { image: '이미지만', name: '이름', desc: '이름+설명', desc_only: '설명만' };
 export const DIRS = ['b', 't', 'r', 'l', 'br', 'bl', 'tr', 'tl'];
 export const DIR_LABEL = { t: '위', b: '아래', l: '왼쪽', r: '오른쪽', tl: '왼쪽 위', tr: '오른쪽 위', bl: '왼쪽 아래', br: '오른쪽 아래' };
 export const ALIGNS = ['left', 'center', 'right'];
@@ -31,9 +28,41 @@ export function defaultAlign(dir) {
   return 'right';
 }
 
-export function nameFont(view) { return `${view === 'desc' ? 600 : 500} ${T.nameSize}px ${FONT}`; }
-export function descFont() { return `400 ${T.descSize}px ${FONT}`; }
-export function axisFont() { return `600 ${T.axisSize}px ${FONT}`; }
+// ---- 사분면 크기와 글자 모양 ----
+export function dims(doc) {
+  return { w: doc?.board?.w || BOARD, h: doc?.board?.h || BOARD };
+}
+
+export function styleOf(doc) {
+  const name = doc?.text?.name || TEXT_DEFAULT.name;
+  const desc = doc?.text?.desc || TEXT_DEFAULT.desc;
+  return {
+    nameSize: name,
+    descSize: desc,
+    lineH: 1.38,
+    nameMaxW: Math.round(280 * name / TEXT_DEFAULT.name),
+    descMaxW: Math.round(260 * desc / TEXT_DEFAULT.desc),
+    gap: 8,
+    axisSize: Math.round(name * 22 / TEXT_DEFAULT.name),
+    axisPadX: 10,
+    axisPadY: 5,
+    axisInset: 14,
+  };
+}
+
+// 그리드: 짧은 쪽을 div칸으로 나누고, 긴 쪽은 칸이 정사각형에 가깝도록 (짝수로 맞춰 가운데 축과 겹치게)
+export function gridSteps(doc) {
+  const { w, h } = dims(doc);
+  const div = doc?.grid?.div || 10;
+  const even = (n) => Math.max(2, 2 * Math.round(n / 2));
+  const divX = w >= h ? even(div * w / h) : div;
+  const divY = h > w ? even(div * h / w) : div;
+  return { divX, divY, sx: w / divX, sy: h / divY };
+}
+
+export function nameFont(view, st = styleOf()) { return `${view === 'desc' ? 600 : 500} ${st.nameSize}px ${FONT}`; }
+export function descFont(st = styleOf()) { return `400 ${st.descSize}px ${FONT}`; }
+export function axisFont(st = styleOf()) { return `600 ${st.axisSize}px ${FONT}`; }
 
 // ---- 글자 너비 재기 (캔버스로 재서 화면·이미지 모두 같은 값) ----
 let mctx = null;
@@ -73,27 +102,37 @@ export function wrapText(text, maxW, font) {
   return out.length ? out : [''];
 }
 
-// 캡션 상자의 크기와 줄 목록
-export function captionContent(name, desc, view) {
+/**
+ * 캡션 상자의 크기와 줄 목록. 보여줄 글이 없으면 null.
+ * 줄 role: name(이름) / desc(이름 아래 설명) / note(설명만 보기의 설명 — 이름처럼 또렷한 색)
+ */
+export function captionContent(name, desc, view, st = styleOf()) {
   const lines = [];
-  const nf = nameFont(view);
-  for (const t of wrapText(name, T.nameMaxW, nf)) lines.push({ text: t, role: 'name', font: nf, size: T.nameSize });
-  if (view === 'desc' && desc && desc.trim()) {
-    const df = descFont();
-    for (const t of wrapText(desc.trim(), T.descMaxW, df)) lines.push({ text: t, role: 'desc', font: df, size: T.descSize });
+  const d = (desc || '').trim();
+  if (view === 'desc_only') {
+    if (!d) return null;
+    const df = descFont(st);
+    for (const t of wrapText(d, st.descMaxW, df)) lines.push({ text: t, role: 'note', font: df, size: st.descSize });
+  } else {
+    const nf = nameFont(view, st);
+    for (const t of wrapText(name, st.nameMaxW, nf)) lines.push({ text: t, role: 'name', font: nf, size: st.nameSize });
+    if (view === 'desc' && d) {
+      const df = descFont(st);
+      for (const t of wrapText(d, st.descMaxW, df)) lines.push({ text: t, role: 'desc', font: df, size: st.descSize });
+    }
   }
   let w = 0, hgt = 0;
   for (const l of lines) {
     l.w = measure(l.text, l.font);
-    l.h = l.size * T.lineH;
+    l.h = l.size * st.lineH;
     w = Math.max(w, l.w);
     hgt += l.h;
   }
   return { lines, w: Math.ceil(w) + 2, h: Math.ceil(hgt) };
 }
 
-export function placeBox(dir, cx, cy, s, w, hgt) {
-  const g = T.gap, r = s / 2;
+export function placeBox(dir, cx, cy, s, w, hgt, gap = 8) {
+  const g = gap, r = s / 2;
   switch (dir) {
     case 't': return { x: cx - w / 2, y: cy - r - g - hgt };
     case 'r': return { x: cx + r + g, y: cy - hgt / 2 };
@@ -112,57 +151,61 @@ function overlap(a, b) {
   const hh = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
   return hh > 0 ? w * hh : 0;
 }
-function outside(a) {
-  const inner = overlap(a, { x: 0, y: 0, w: BOARD, h: BOARD });
-  return a.w * a.h - inner;
-}
 
 // 축 이름 상자 (사분면 안쪽 끝, 축 선 위에 얹힘)
-export function axisLabelBoxes(axes) {
-  const f = axisFont();
+export function axisLabelBoxes(axes, st = styleOf(), W = BOARD, H = BOARD) {
+  const f = axisFont(st);
   const res = [];
-  const hgt = T.axisSize * 1.3 + T.axisPadY * 2;
-  const mk = (key, text, place) => {
+  const hgt = st.axisSize * 1.3 + st.axisPadY * 2;
+  const mk = (key, text) => {
     const t = String(text || '').trim();
     if (!t) return;
-    const w = Math.ceil(measure(t, f)) + T.axisPadX * 2;
+    const w = Math.ceil(measure(t, f)) + st.axisPadX * 2;
     let x, y;
-    if (place === 'top') { x = BOARD / 2 - w / 2; y = T.axisInset; }
-    else if (place === 'bottom') { x = BOARD / 2 - w / 2; y = BOARD - T.axisInset - hgt; }
-    else if (place === 'left') { x = T.axisInset; y = BOARD / 2 - hgt / 2; }
-    else { x = BOARD - T.axisInset - w; y = BOARD / 2 - hgt / 2; }
+    if (key === 'top') { x = W / 2 - w / 2; y = st.axisInset; }
+    else if (key === 'bottom') { x = W / 2 - w / 2; y = H - st.axisInset - hgt; }
+    else if (key === 'left') { x = st.axisInset; y = H / 2 - hgt / 2; }
+    else { x = W - st.axisInset - w; y = H / 2 - hgt / 2; }
     res.push({ key, text: t, x, y, w, h: hgt });
   };
-  mk('top', axes?.top, 'top');
-  mk('bottom', axes?.bottom, 'bottom');
-  mk('left', axes?.left, 'left');
-  mk('right', axes?.right, 'right');
+  mk('top', axes?.top);
+  mk('bottom', axes?.bottom);
+  mk('left', axes?.left);
+  mk('right', axes?.right);
   return res;
 }
 
 const DIR_PENALTY = { b: 0, t: 2, r: 3, l: 3, br: 6, bl: 6, tr: 7, tl: 7 };
-const AXIS_V = { x: BOARD / 2 - 1, y: 0, w: 2, h: BOARD };
-const AXIS_H = { x: 0, y: BOARD / 2 - 1, w: BOARD, h: 2 };
 
 /**
  * 캡션 자동 배치.
- * items: [{c, x, y, desc}] (x,y는 0~1), chars: Map(id -> {name})
+ * doc: 사분면 데이터 (크기·글자·아이콘 크기·축 이름을 여기서 읽음)
  * overrides: {charId: {dir?, align?}} (보기별), prevDirs: Map (안정성용)
  * 반환: Map(charId -> {dir, align, pinned, x, y, w, h, lines, bad})
  */
-export function layoutCaptions({ items, chars, view, iconSize, overrides = {}, axes, prevDirs }) {
+export function layoutCaptions({ doc, chars, view, overrides = {}, prevDirs }) {
   const out = new Map();
-  if (view === 'image') return out;
-  const s = iconSize;
-  const live = items.filter((it) => chars.has(it.c));
-  const icons = live.map((it) => ({ id: it.c, x: it.x * BOARD - s / 2, y: it.y * BOARD - s / 2, w: s, h: s }));
-  const axisBoxes = axisLabelBoxes(axes);
+  if (!CAPTION_VIEWS.includes(view)) return out;
+  const { w: W, h: H } = dims(doc);
+  const st = styleOf(doc);
+  const s = doc.iconSize;
+  const live = doc.items.filter((it) => chars.has(it.c));
+  const icons = live.map((it) => ({ id: it.c, x: it.x * W - s / 2, y: it.y * H - s / 2, w: s, h: s }));
+  const axisBoxes = axisLabelBoxes(doc.axes, st, W, H);
+  const AXIS_V = { x: W / 2 - 1, y: 0, w: 2, h: H };
+  const AXIS_H = { x: 0, y: H / 2 - 1, w: W, h: 2 };
+  const boardBox = { x: 0, y: 0, w: W, h: H };
+
   const content = new Map();
-  for (const it of live) content.set(it.c, captionContent(chars.get(it.c).name, it.desc, view));
+  const withText = [];
+  for (const it of live) {
+    const c = captionContent(chars.get(it.c).name, it.desc, view, st);
+    if (c) { content.set(it.c, c); withText.push(it); }
+  }
 
   const make = (it, dir) => {
     const c = content.get(it.c);
-    const p = placeBox(dir, it.x * BOARD, it.y * BOARD, s, c.w, c.h);
+    const p = placeBox(dir, it.x * W, it.y * H, s, c.w, c.h, st.gap);
     return { dir, x: p.x, y: p.y, w: c.w, h: c.h, lines: c.lines };
   };
 
@@ -173,13 +216,13 @@ export function layoutCaptions({ items, chars, view, iconSize, overrides = {}, a
     for (const ab of axisBoxes) hit += overlap(box, ab) * 0.8;
     // 축 선을 가로지르는 건 가벼운 감점 (읽을 수는 있지만 덜 깔끔함)
     const line = overlap(box, AXIS_V) + overlap(box, AXIS_H);
-    const out = outside(box) * 1.5;
-    return { hit: hit + out, total: hit + out + line * 1.5 + DIR_PENALTY[box.dir] - ((prevDirs && prevDirs.get(it.c) === box.dir) ? 25 : 0) };
+    const outside = (box.w * box.h - overlap(box, boardBox)) * 1.5;
+    return { hit: hit + outside, total: hit + outside + line * 1.5 + DIR_PENALTY[box.dir] - ((prevDirs && prevDirs.get(it.c) === box.dir) ? 25 : 0) };
   };
 
   // 1) 고정한 캡션
   const autoItems = [];
-  for (const it of live) {
+  for (const it of withText) {
     const ov = overrides[it.c] || {};
     if (ov.dir && DIRS.includes(ov.dir)) {
       const b = make(it, ov.dir);
@@ -190,7 +233,7 @@ export function layoutCaptions({ items, chars, view, iconSize, overrides = {}, a
   }
 
   // 2) 붐비는 곳부터 자동 배치, 3번 다듬기
-  const crowd = (it) => icons.reduce((n, ic) => n + (Math.hypot(ic.x + s / 2 - it.x * BOARD, ic.y + s / 2 - it.y * BOARD) < s * 3 ? 1 : 0), 0);
+  const crowd = (it) => icons.reduce((n, ic) => n + (Math.hypot(ic.x + s / 2 - it.x * W, ic.y + s / 2 - it.y * H) < s * 3 ? 1 : 0), 0);
   autoItems.sort((a, b) => crowd(b) - crowd(a));
   for (let pass = 0; pass < 3; pass++) {
     for (const it of autoItems) {
@@ -209,7 +252,7 @@ export function layoutCaptions({ items, chars, view, iconSize, overrides = {}, a
   }
 
   // 3) 겹침 표시
-  for (const it of live) {
+  for (const it of withText) {
     const b = out.get(it.c);
     b.bad = cost(it, b, out).hit > 4;
     if (prevDirs) prevDirs.set(it.c, b.dir);
@@ -222,8 +265,7 @@ export async function ensureFontsFor(texts) {
   if (typeof document === 'undefined' || !document.fonts) return;
   const s = Array.from(new Set(texts.filter(Boolean).join(' '))).join('');
   if (!s.trim()) return;
-  const fonts = [nameFont('name'), nameFont('desc'), descFont(), axisFont(),
-    `600 42px ${SERIF}`, `400 19px ${FONT}`, `400 15px ${FONT}`];
+  const fonts = [`400 20px ${FONT}`, `500 20px ${FONT}`, `600 20px ${FONT}`, `600 42px ${SERIF}`];
   await Promise.race([
     Promise.all(fonts.map((f) => document.fonts.load(f, s).catch(() => null))),
     new Promise((r) => setTimeout(r, 4000)),
@@ -244,19 +286,34 @@ export function docTexts(doc, chars, extra = []) {
 export function emptyDoc() {
   return {
     v: 1,
+    board: { w: BOARD, h: BOARD },
+    text: { ...TEXT_DEFAULT },
     axes: { top: '', bottom: '', left: '', right: '' },
     iconSize: 88,
     grid: { show: true, snap: false, div: 10 },
     items: [],
-    captions: { name: {}, desc: {} },
+    captions: { name: {}, desc: {}, desc_only: {} },
     export: { theme: 'dark', showAuthor: true, showGrid: false },
   };
 }
+
+const clampInt = (v, lo, hi, dflt) => {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : dflt;
+};
 
 // 저장된 데이터를 안전한 모양으로 정리 (빠진 칸 채우기, 잘못된 값 버리기)
 export function normalizeDoc(raw) {
   const d = emptyDoc();
   if (!raw || typeof raw !== 'object') return d;
+  if (raw.board && typeof raw.board === 'object') {
+    d.board.w = clampInt(raw.board.w, SIZE_MIN, SIZE_MAX, BOARD);
+    d.board.h = clampInt(raw.board.h, SIZE_MIN, SIZE_MAX, BOARD);
+  }
+  if (raw.text && typeof raw.text === 'object') {
+    d.text.name = clampInt(raw.text.name, ...TEXT_RANGE.name, TEXT_DEFAULT.name);
+    d.text.desc = clampInt(raw.text.desc, ...TEXT_RANGE.desc, TEXT_DEFAULT.desc);
+  }
   for (const k of ['top', 'bottom', 'left', 'right']) {
     if (typeof raw.axes?.[k] === 'string') d.axes[k] = raw.axes[k].slice(0, 20);
   }
@@ -277,7 +334,7 @@ export function normalizeDoc(raw) {
       d.items.push({ c: it.c.slice(0, 40), x, y, desc: typeof it.desc === 'string' ? it.desc.slice(0, 60) : '' });
     }
   }
-  for (const v of ['name', 'desc']) {
+  for (const v of CAPTION_VIEWS) {
     const src = raw.captions?.[v];
     if (src && typeof src === 'object') {
       for (const [id, ov] of Object.entries(src)) {
@@ -306,7 +363,8 @@ export function compactDoc(doc) {
     return o;
   });
   const ids = new Set(d.items.map((i) => i.c));
-  for (const v of ['name', 'desc']) {
+  for (const v of CAPTION_VIEWS) {
+    d.captions[v] = d.captions[v] || {};
     for (const id of Object.keys(d.captions[v])) if (!ids.has(id)) delete d.captions[v][id];
   }
   for (const k of Object.keys(d.axes)) d.axes[k] = d.axes[k].trim().slice(0, 20);
