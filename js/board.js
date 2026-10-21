@@ -135,7 +135,8 @@ export class BoardView {
     // 아이콘
     const live = doc.items.filter((it) => chars.has(it.c));
     const seen = new Set();
-    for (const it of live) {
+    // 아이콘 겹침 순서 = doc.items 순서 (뒤에 있을수록 위에 그려짐). 끌고 있는 아이콘만 잠깐 맨 위로.
+    live.forEach((it, i) => {
       seen.add(it.c);
       let el = this.iconEls.get(it.c);
       const ch = chars.get(it.c);
@@ -153,10 +154,11 @@ export class BoardView {
       Object.assign(el.style, {
         left: (it.x * W - s / 2) + 'px', top: (it.y * H - s / 2) + 'px',
         width: s + 'px', height: s + 'px', borderRadius: Math.round(s * 0.18) + 'px',
+        zIndex: String((this.drag?.id === it.c && this.drag.moved) ? live.length + 5 : i + 1),
       });
       el.classList.toggle('selected', selected === it.c);
       el.classList.toggle('dragging', this.drag?.id === it.c && this.drag.moved);
-    }
+    });
     for (const [id, el] of this.iconEls) if (!seen.has(id)) { el.remove(); this.iconEls.delete(id); }
 
     // 캡션
@@ -166,7 +168,7 @@ export class BoardView {
       const b = layout.get(this.drag.id);
       const it = live.find((i) => i.c === this.drag.id);
       if (b && it) {
-        const p = placeBox(b.dir, it.x * W, it.y * H, s, b.w, b.h, st.gap);
+        const p = placeBox(b.dir, it.x * W, it.y * H, s, b.w, b.h, st.gap, b.halign, b.valign, b.leadTop, b.leadBot);
         layout.set(this.drag.id, { ...b, x: p.x, y: p.y });
       }
     } else {

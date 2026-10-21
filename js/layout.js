@@ -1,16 +1,18 @@
 // 사분면 배치 계산 (화면과 내보내기 이미지가 같은 결과를 쓰도록 한 곳에서 계산)
-// 좌표 단위: 사분면 기본 크기 1000×1000. 가로·세로는 사분면마다 600~2000에서 바꿀 수 있음.
+// 좌표 단위: 사분면 기본 크기 1000×1000. 가로·세로는 사분면마다 400~4000에서 바꿀 수 있음.
 // 배치 위치(x, y)는 0~1 비율로 저장하므로 크기를 바꿔도 같은 자리에 비례해서 놓여요.
 
 export const BOARD = 1000;                  // 기본 크기
-export const SIZE_MIN = 600;
-export const SIZE_MAX = 2000;
+export const SIZE_MIN = 400;
+export const SIZE_MAX = 4000;
+export const ICON_MIN = 24;
+export const ICON_MAX = 400;
 export const STAGE_MARGIN = 70;             // 사분면 바깥 여백 (캡션이 살짝 나가도 보이게)
 export const FONT = '"IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif';
 export const SERIF = '"Noto Serif KR", "AppleMyungjo", "Batang", serif';
 
-export const TEXT_DEFAULT = { name: 24, desc: 19 };
-export const TEXT_RANGE = { name: [14, 48], desc: [12, 40] };
+export const TEXT_DEFAULT = { name: 24, desc: 19, axis: 22 };
+export const TEXT_RANGE = { name: [10, 96], desc: [10, 80], axis: [10, 96] };
 
 // 예전 코드 호환용 (기본 글자 크기 기준)
 export const T = { nameSize: 24, descSize: 19 };
@@ -21,6 +23,7 @@ export const VIEW_LABEL = { image: '이미지만', name: '이름', desc: '이름
 export const DIRS = ['b', 't', 'r', 'l', 'br', 'bl', 'tr', 'tl'];
 export const DIR_LABEL = { t: '위', b: '아래', l: '왼쪽', r: '오른쪽', tl: '왼쪽 위', tr: '오른쪽 위', bl: '왼쪽 아래', br: '오른쪽 아래' };
 export const ALIGNS = ['left', 'center', 'right'];
+export const VALIGNS = ['top', 'middle', 'bottom'];
 
 export function defaultAlign(dir) {
   if (dir === 't' || dir === 'b') return 'center';
@@ -36,6 +39,8 @@ export function dims(doc) {
 export function styleOf(doc) {
   const name = doc?.text?.name || TEXT_DEFAULT.name;
   const desc = doc?.text?.desc || TEXT_DEFAULT.desc;
+  // 축 글자 크기를 따로 정하지 않은 예전 사분면은 이름 크기를 따라감
+  const axis = doc?.text?.axis || Math.round(name * TEXT_DEFAULT.axis / TEXT_DEFAULT.name);
   return {
     nameSize: name,
     descSize: desc,
@@ -43,7 +48,7 @@ export function styleOf(doc) {
     nameMaxW: Math.round(280 * name / TEXT_DEFAULT.name),
     descMaxW: Math.round(260 * desc / TEXT_DEFAULT.desc),
     gap: 8,
-    axisSize: Math.round(name * 22 / TEXT_DEFAULT.name),
+    axisSize: axis,
     axisPadX: 10,
     axisPadY: 5,
     axisInset: 14,
@@ -128,22 +133,35 @@ export function captionContent(name, desc, view, st = styleOf()) {
     w = Math.max(w, l.w);
     hgt += l.h;
   }
-  return { lines, w: Math.ceil(w) + 2, h: Math.ceil(hgt) };
+  // 줄 위아래의 행간 여백 (세로 정렬 때 '글자' 끝을 아이콘 가장자리에 맞추려고 뺌)
+  const leadTop = lines.length ? lines[0].size * (st.lineH - 1) / 2 : 0;
+  const leadBot = lines.length ? lines[lines.length - 1].size * (st.lineH - 1) / 2 : 0;
+  return { lines, w: Math.ceil(w) + 2, h: Math.ceil(hgt), leadTop, leadBot };
 }
 
-export function placeBox(dir, cx, cy, s, w, hgt, gap = 8) {
+/**
+ * 캡션 상자 위치. 아이콘 가장자리 기준으로 맞춤:
+ *  - 위·아래 캡션: halign left = 상자 왼쪽 끝이 아이콘 왼쪽 끝과 일치, right = 오른쪽 끝끼리, 없으면 가운데
+ *  - 왼쪽·오른쪽 캡션: valign top = 글 맨 위가 아이콘 위 가장자리와 일치, bottom = 아래끼리, 없으면 가운데
+ */
+export function placeBox(dir, cx, cy, s, w, hgt, gap = 8, halign = null, valign = null, leadTop = 0, leadBot = 0) {
   const g = gap, r = s / 2;
+  const hx = halign === 'left' ? cx - r : halign === 'right' ? cx + r - w : cx - w / 2;
+  const vy = valign === 'top' ? cy - r - leadTop : valign === 'bottom' ? cy + r - hgt + leadBot : cy - hgt / 2;
   switch (dir) {
-    case 't': return { x: cx - w / 2, y: cy - r - g - hgt };
-    case 'r': return { x: cx + r + g, y: cy - hgt / 2 };
-    case 'l': return { x: cx - r - g - w, y: cy - hgt / 2 };
+    case 't': return { x: hx, y: cy - r - g - hgt };
+    case 'r': return { x: cx + r + g, y: vy };
+    case 'l': return { x: cx - r - g - w, y: vy };
     case 'tr': return { x: cx + r, y: cy - r - hgt };
     case 'tl': return { x: cx - r - w, y: cy - r - hgt };
     case 'br': return { x: cx + r, y: cy + r };
     case 'bl': return { x: cx - r - w, y: cy + r };
-    default: return { x: cx - w / 2, y: cy + r + g };
+    default: return { x: hx, y: cy + r + g };
   }
 }
+
+// 이 방향에서 세로 정렬(위/가운데/아래)을 쓸 수 있는지
+export const VALIGN_DIRS = ['l', 'r'];
 
 function overlap(a, b) {
   const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
@@ -180,7 +198,7 @@ const DIR_PENALTY = { b: 0, t: 2, r: 3, l: 3, br: 6, bl: 6, tr: 7, tl: 7 };
 /**
  * 캡션 자동 배치.
  * doc: 사분면 데이터 (크기·글자·아이콘 크기·축 이름을 여기서 읽음)
- * overrides: {charId: {dir?, align?}} (보기별), prevDirs: Map (안정성용)
+ * overrides: {charId: {dir?, align?, valign?}} (보기별), prevDirs: Map (안정성용)
  * 반환: Map(charId -> {dir, align, pinned, x, y, w, h, lines, bad})
  */
 export function layoutCaptions({ doc, chars, view, overrides = {}, prevDirs }) {
@@ -205,8 +223,11 @@ export function layoutCaptions({ doc, chars, view, overrides = {}, prevDirs }) {
 
   const make = (it, dir) => {
     const c = content.get(it.c);
-    const p = placeBox(dir, it.x * W, it.y * H, s, c.w, c.h, st.gap);
-    return { dir, x: p.x, y: p.y, w: c.w, h: c.h, lines: c.lines };
+    const ov = overrides[it.c] || {};
+    const halign = ALIGNS.includes(ov.align) ? ov.align : null;
+    const valign = VALIGNS.includes(ov.valign) ? ov.valign : null;
+    const p = placeBox(dir, it.x * W, it.y * H, s, c.w, c.h, st.gap, halign, valign, c.leadTop, c.leadBot);
+    return { dir, x: p.x, y: p.y, w: c.w, h: c.h, lines: c.lines, halign, valign, leadTop: c.leadTop, leadBot: c.leadBot };
   };
 
   const cost = (it, box, placed) => {
@@ -286,7 +307,7 @@ export function docTexts(doc, chars, extra = []) {
 export function emptyDoc() {
   return {
     v: 1,
-    board: { w: BOARD, h: BOARD },
+    board: { w: BOARD, h: BOARD, lock: false },
     text: { ...TEXT_DEFAULT },
     axes: { top: '', bottom: '', left: '', right: '' },
     iconSize: 88,
@@ -309,16 +330,21 @@ export function normalizeDoc(raw) {
   if (raw.board && typeof raw.board === 'object') {
     d.board.w = clampInt(raw.board.w, SIZE_MIN, SIZE_MAX, BOARD);
     d.board.h = clampInt(raw.board.h, SIZE_MIN, SIZE_MAX, BOARD);
+    d.board.lock = !!raw.board.lock;
   }
   if (raw.text && typeof raw.text === 'object') {
     d.text.name = clampInt(raw.text.name, ...TEXT_RANGE.name, TEXT_DEFAULT.name);
     d.text.desc = clampInt(raw.text.desc, ...TEXT_RANGE.desc, TEXT_DEFAULT.desc);
+    // 축 글자를 따로 정한 적 없는 예전 데이터는 이름 크기에 맞춰 채움
+    d.text.axis = raw.text.axis !== undefined
+      ? clampInt(raw.text.axis, ...TEXT_RANGE.axis, TEXT_DEFAULT.axis)
+      : Math.round(d.text.name * TEXT_DEFAULT.axis / TEXT_DEFAULT.name);
   }
   for (const k of ['top', 'bottom', 'left', 'right']) {
     if (typeof raw.axes?.[k] === 'string') d.axes[k] = raw.axes[k].slice(0, 20);
   }
   const sz = Number(raw.iconSize);
-  if (sz >= 48 && sz <= 160) d.iconSize = Math.round(sz);
+  if (sz >= ICON_MIN && sz <= ICON_MAX) d.iconSize = Math.round(sz);
   if (raw.grid && typeof raw.grid === 'object') {
     d.grid.show = raw.grid.show !== false;
     d.grid.snap = !!raw.grid.snap;
@@ -342,7 +368,8 @@ export function normalizeDoc(raw) {
         const o = {};
         if (DIRS.includes(ov.dir)) o.dir = ov.dir;
         if (ALIGNS.includes(ov.align)) o.align = ov.align;
-        if (o.dir || o.align) d.captions[v][id] = o;
+        if (VALIGNS.includes(ov.valign)) o.valign = ov.valign;
+        if (o.dir || o.align || o.valign) d.captions[v][id] = o;
       }
     }
   }

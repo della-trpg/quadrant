@@ -4,7 +4,8 @@ import { createApi } from './api.js';
 import { h, icon, toast, confirmDialog, fmtDate, lsGet, lsSet, charMeta } from './util.js';
 import { clearMeasureCache, normalizeDoc, VIEWS, VIEW_LABEL, FONT, SERIF, T } from './layout.js';
 import { BoardView } from './board.js';
-import { renderThumb } from './render.js';
+import { renderThumb, THEMES } from './render.js';
+import { getTheme, setTheme } from './theme.js';
 import { openExportModal } from './export_modal.js';
 import { mountEditor } from './editor.js';
 
@@ -112,6 +113,11 @@ async function loadCharacters(worldId) {
 // ---------------------------------------------------------------- 머리말
 function renderHeader() {
   const right = [];
+  const themeSel = h('select', { class: 'select select-sm theme-select', 'aria-label': '화면 테마', title: '화면 테마',
+    onchange: (e) => setTheme(e.target.value) },
+    ...Object.entries(THEMES).map(([k, t]) => h('option', { value: k }, t.label)));
+  themeSel.value = getTheme();
+  right.push(themeSel);
   if (app.api?.demo) right.push(h('span', { class: 'badge badge-demo', title: '서버 없이 이 브라우저에만 저장돼요' }, '데모 모드'));
   if (app.api?.user && app.profile?.nickname) right.push(h('span', { class: 'header-nick' }, app.profile.nickname));
   if (app.api?.user && !app.api.demo) right.push(h('button', { class: 'btn btn-sm', type: 'button', onclick: async () => { await app.api.signOut(); refreshSession(); } }, '로그아웃'));
@@ -332,10 +338,24 @@ async function renderGallery(tab, token) {
   await load();
 }
 
+// 목록 썸네일은 캔버스라서 테마를 바꾸면 다시 그려야 함
+const thumbDocs = new WeakMap();
+function drawThumb(box) {
+  const doc = thumbDocs.get(box);
+  if (!doc) return;
+  try { box.replaceChildren(renderThumb({ doc, chars: app.chars, size: 280, theme: getTheme() })); } catch { /* ignore */ }
+}
+window.addEventListener('quadrant-theme', () => {
+  for (const box of document.querySelectorAll('.q-thumb')) drawThumb(box);
+  const sel = headerEl.querySelector('.theme-select');
+  if (sel) sel.value = getTheme();
+});
+
 function card(r) {
   const doc = normalizeDoc(r.data);
   const thumbBox = h('div', { class: 'q-thumb' });
-  try { thumbBox.append(renderThumb({ doc, chars: app.chars, size: 280 })); } catch { /* ignore */ }
+  thumbDocs.set(thumbBox, doc);
+  drawThumb(thumbBox);
   const mine = r.owner_id === app.api.user?.id;
   return h('a', { class: 'q-card', href: `#/view/${r.id}` },
     thumbBox,

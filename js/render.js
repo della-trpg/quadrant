@@ -145,6 +145,9 @@ export function renderExport({ doc, chars, view, theme, showGrid, showAuthor, ti
   const boardTop = headerH ? 44 + headerH + 26 : M;
   const H = boardTop + BH + M + 10;
 
+  // 큰 사분면은 픽셀 수를 제한 (아이폰 사파리는 캔버스가 약 1,670만 픽셀을 넘으면 빈 이미지가 됨)
+  const MAX_PIXELS = 16_000_000;
+  pixelRatio = Math.min(pixelRatio, Math.sqrt(MAX_PIXELS / (W * H)));
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(W * pixelRatio);
   canvas.height = Math.round(H * pixelRatio);
